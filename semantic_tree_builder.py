@@ -9,7 +9,7 @@ from collections import defaultdict
 class SemanticNode:
     def __init__(self, name, node_type, start_line, end_line, filepath=None, language=None):
         self.name = name
-        self.node_type = node_type
+        self.node_type = node_type  # 'class', 'enum', 'interface', 'function', 'method'
         self.start_line = start_line
         self.end_line = end_line
         self.filepath = filepath
@@ -147,8 +147,17 @@ class MultiLanguageScanner:
         print(f"\n{'='*60}")
         print(f"✓ Successfully parsed: {self.file_count} files")
         print(f"✗ Errors: {self.error_count} files")
-        print(f"✓ Total functions/methods: {len([n for n in self.nodes if n.node_type in ['function', 'method']])}")
-        print(f"✓ Total classes: {len([n for n in self.nodes if n.node_type == 'class'])}")
+        
+        # Enhanced statistics
+        type_counts = defaultdict(int)
+        for node in self.nodes:
+            type_counts[node.node_type] += 1
+        
+        print(f"✓ Total classes: {type_counts['class']}")
+        print(f"✓ Total enums: {type_counts['enum']}")
+        print(f"✓ Total interfaces: {type_counts['interface']}")
+        print(f"✓ Total functions: {type_counts['function']}")
+        print(f"✓ Total methods: {type_counts['method']}")
         print(f"{'='*60}\n")
         
         print("Building call graph...")
@@ -283,10 +292,10 @@ class MultiLanguageScanner:
         walk(func_node)
         return calls
     
-    # ==================== JAVA EXTRACTOR ====================
+    # ==================== JAVA EXTRACTOR (ENHANCED) ====================
     
     def _extract_java(self, root_node, source_code, filepath):
-        """Extract nodes from Java code"""
+        """Extract nodes from Java code - WITH ENUM AND INTERFACE SUPPORT"""
         
         def walk(node, parent_class=None):
             # Java class: class_declaration
@@ -316,6 +325,62 @@ class MultiLanguageScanner:
                 if body:
                     for child in body.children:
                         walk(child, parent_class=class_name)
+            
+            # Java enum: enum_declaration (NEW!)
+            elif node.type == 'enum_declaration':
+                name_node = node.child_by_field_name('name')
+                if not name_node:
+                    return
+                
+                enum_name = source_code[name_node.start_byte:name_node.end_byte].decode()
+                
+                enum_node = SemanticNode(
+                    name=enum_name,
+                    node_type='enum',
+                    start_line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    filepath=filepath,
+                    language='java'
+                )
+                enum_node.qualified_name = enum_name
+                enum_node.full_path = f"{filepath}::{enum_name}"
+                
+                self.nodes.append(enum_node)
+                self.node_map[enum_node.full_path] = enum_node
+                
+                # Walk enum body (enums can have methods too!)
+                body = node.child_by_field_name('body')
+                if body:
+                    for child in body.children:
+                        walk(child, parent_class=enum_name)
+            
+            # Java interface: interface_declaration (NEW!)
+            elif node.type == 'interface_declaration':
+                name_node = node.child_by_field_name('name')
+                if not name_node:
+                    return
+                
+                interface_name = source_code[name_node.start_byte:name_node.end_byte].decode()
+                
+                interface_node = SemanticNode(
+                    name=interface_name,
+                    node_type='interface',
+                    start_line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    filepath=filepath,
+                    language='java'
+                )
+                interface_node.qualified_name = interface_name
+                interface_node.full_path = f"{filepath}::{interface_name}"
+                
+                self.nodes.append(interface_node)
+                self.node_map[interface_node.full_path] = interface_node
+                
+                # Walk interface body
+                body = node.child_by_field_name('body')
+                if body:
+                    for child in body.children:
+                        walk(child, parent_class=interface_name)
             
             # Java method: method_declaration
             elif node.type == 'method_declaration':
@@ -375,13 +440,11 @@ class MultiLanguageScanner:
         calls = []
         
         def walk(node):
-            # Java method invocation: method_invocation
             if node.type == 'method_invocation':
                 name_node = node.child_by_field_name('name')
                 if name_node:
                     method_name = source_code[name_node.start_byte:name_node.end_byte].decode()
                     
-                    # Check if it has an object (obj.method())
                     object_node = node.child_by_field_name('object')
                     if object_node:
                         obj_name = source_code[object_node.start_byte:object_node.end_byte].decode()
@@ -392,7 +455,6 @@ class MultiLanguageScanner:
                         else:
                             qualified = f"{filepath}::{obj_name}.{method_name}"
                     else:
-                        # No object, assume same class
                         if parent_class:
                             qualified = f"{filepath}::{parent_class}.{method_name}"
                         else:
@@ -412,13 +474,11 @@ class MultiLanguageScanner:
         """Extract nodes from C code"""
         
         def walk(node):
-            # C function: function_definition
             if node.type == 'function_definition':
                 declarator = node.child_by_field_name('declarator')
                 if not declarator:
                     return
                 
-                # Get function name from declarator
                 func_name = self._get_c_function_name(declarator, source_code)
                 if not func_name:
                     return
@@ -435,17 +495,14 @@ class MultiLanguageScanner:
                 func_node.qualified_name = func_name
                 func_node.full_path = f"{filepath}::{func_name}"
                 
-                # Extract parameters
                 params = self._get_c_parameters(declarator, source_code)
                 func_node.parameters = params
                 
-                # Extract return type
                 type_node = node.child_by_field_name('type')
                 if type_node:
                     return_type = source_code[type_node.start_byte:type_node.end_byte].decode()
                     func_node.return_type = return_type
                 
-                # Find calls
                 func_node.calls = self._find_calls_c(node, source_code, filepath)
                 
                 self.nodes.append(func_node)
@@ -459,7 +516,6 @@ class MultiLanguageScanner:
     def _get_c_function_name(self, declarator, source_code):
         """Extract function name from C declarator"""
         if declarator.type == 'function_declarator':
-            # Get the declarator field which contains the name
             inner = declarator.child_by_field_name('declarator')
             if inner and inner.type == 'identifier':
                 return source_code[inner.start_byte:inner.end_byte].decode()
@@ -505,7 +561,6 @@ class MultiLanguageScanner:
         """Extract nodes from C++ code"""
         
         def walk(node, parent_class=None, namespace=None):
-            # C++ class: class_specifier
             if node.type == 'class_specifier':
                 name_node = node.child_by_field_name('name')
                 if not name_node:
@@ -527,13 +582,11 @@ class MultiLanguageScanner:
                 self.nodes.append(class_node)
                 self.node_map[class_node.full_path] = class_node
                 
-                # Walk class body
                 body = node.child_by_field_name('body')
                 if body:
                     for child in body.children:
                         walk(child, parent_class=class_name, namespace=namespace)
             
-            # C++ function: function_definition
             elif node.type == 'function_definition':
                 declarator = node.child_by_field_name('declarator')
                 if not declarator:
@@ -560,17 +613,14 @@ class MultiLanguageScanner:
                     func_node.qualified_name = func_name
                     func_node.full_path = f"{filepath}::{func_name}"
                 
-                # Extract parameters
                 params = self._get_cpp_parameters(declarator, source_code)
                 func_node.parameters = params
                 
-                # Extract return type
                 type_node = node.child_by_field_name('type')
                 if type_node:
                     return_type = source_code[type_node.start_byte:type_node.end_byte].decode()
                     func_node.return_type = return_type
                 
-                # Find calls
                 func_node.calls = self._find_calls_cpp(node, source_code, parent_class, filepath)
                 
                 self.nodes.append(func_node)
@@ -626,7 +676,6 @@ class MultiLanguageScanner:
                             qualified = f"{filepath}::{func_name}"
                         calls.append(qualified)
                     elif func.type == 'field_expression':
-                        # Method call: obj.method()
                         field = func.child_by_field_name('field')
                         if field:
                             method_name = source_code[field.start_byte:field.end_byte].decode()
@@ -660,23 +709,21 @@ class MultiLanguageScanner:
         stats = {
             'total_files': self.file_count,
             'total_classes': len([n for n in self.nodes if n.node_type == 'class']),
+            'total_enums': len([n for n in self.nodes if n.node_type == 'enum']),
+            'total_interfaces': len([n for n in self.nodes if n.node_type == 'interface']),
             'total_functions': len([n for n in self.nodes if n.node_type == 'function']),
             'total_methods': len([n for n in self.nodes if n.node_type == 'method']),
-            'by_language': defaultdict(lambda: {'classes': 0, 'functions': 0, 'methods': 0}),
-            'files': defaultdict(lambda: {'classes': 0, 'functions': 0, 'methods': 0})
+            'by_language': defaultdict(lambda: {'classes': 0, 'enums': 0, 'interfaces': 0, 'functions': 0, 'methods': 0}),
+            'files': defaultdict(lambda: {'classes': 0, 'enums': 0, 'interfaces': 0, 'functions': 0, 'methods': 0})
         }
         
         for node in self.nodes:
             lang = node.language
-            if node.node_type == 'class':
-                stats['by_language'][lang]['classes'] += 1
-                stats['files'][node.filepath]['classes'] += 1
-            elif node.node_type == 'function':
-                stats['by_language'][lang]['functions'] += 1
-                stats['files'][node.filepath]['functions'] += 1
-            elif node.node_type == 'method':
-                stats['by_language'][lang]['methods'] += 1
-                stats['files'][node.filepath]['methods'] += 1
+            node_type = node.node_type
+            
+            if node_type in ['class', 'enum', 'interface', 'function', 'method']:
+                stats['by_language'][lang][f"{node_type}s" if node_type != 'class' else 'classes'] += 1
+                stats['files'][node.filepath][f"{node_type}s" if node_type != 'class' else 'classes'] += 1
         
         return stats
     
@@ -689,13 +736,19 @@ class MultiLanguageScanner:
         print("="*70)
         print(f"Total Files: {stats['total_files']}")
         print(f"Total Classes: {stats['total_classes']}")
+        print(f"Total Enums: {stats['total_enums']}")
+        print(f"Total Interfaces: {stats['total_interfaces']}")
         print(f"Total Functions: {stats['total_functions']}")
         print(f"Total Methods: {stats['total_methods']}")
         
         print("\nBy Language:")
         for lang, counts in stats['by_language'].items():
-            total = counts['functions'] + counts['methods']
-            print(f"  {lang:8} - {counts['classes']} classes, {total} functions/methods")
+            print(f"\n  {lang.upper()}:")
+            print(f"    Classes: {counts['classes']}")
+            print(f"    Enums: {counts['enums']}")
+            print(f"    Interfaces: {counts['interfaces']}")
+            print(f"    Functions: {counts['functions']}")
+            print(f"    Methods: {counts['methods']}")
         
         print("\nTop 10 Files by Function Count:")
         sorted_files = sorted(
@@ -706,7 +759,9 @@ class MultiLanguageScanner:
         
         for filepath, counts in sorted_files:
             total = counts['functions'] + counts['methods']
-            print(f"  {filepath}: {total} functions/methods ({counts['classes']} classes)")
+            types = counts['classes'] + counts['enums'] + counts['interfaces']
+            print(f"  {filepath}:")
+            print(f"    {total} functions/methods ({counts['classes']} classes, {counts['enums']} enums, {counts['interfaces']} interfaces)")
     
     def search_function(self, func_name):
         """Search for functions by name"""
@@ -716,11 +771,11 @@ class MultiLanguageScanner:
                 results.append(node)
         return results
     
-    def search_class(self, class_name):
-        """Search for classes by name"""
+    def search_type(self, type_name):
+        """Search for classes, enums, or interfaces by name"""
         results = []
         for node in self.nodes:
-            if node.name == class_name and node.node_type == 'class':
+            if node.name == type_name and node.node_type in ['class', 'enum', 'interface']:
                 results.append(node)
         return results
     
@@ -741,7 +796,7 @@ class MultiLanguageScanner:
             print(f"  Type: {node.node_type}")
             print(f"  Lines: {node.start_line}-{node.end_line}")
             if node.parent_class:
-                print(f"  Class: {node.parent_class}")
+                print(f"  Parent: {node.parent_class}")
             if node.return_type:
                 print(f"  Return Type: {node.return_type}")
             print(f"  Parameters: {node.parameters}")
@@ -756,57 +811,73 @@ class MultiLanguageScanner:
             if len(node.called_by) > 10:
                 print(f"    ... and {len(node.called_by) - 10} more")
     
-    def print_class_details(self, class_name):
-        """Print details for a specific class"""
-        class_node = None
-        for node in self.nodes:
-            if node.name == class_name and node.node_type == 'class':
-                class_node = node
-                break
+    def print_type_details(self, type_name):
+        """Print details for a specific class, enum, or interface"""
+        results = self.search_type(type_name)
         
-        if not class_node:
-            print(f"\nNo class named '{class_name}' found.")
+        if not results:
+            print(f"\nNo type named '{type_name}' found.")
             return
         
-        methods = [n for n in self.nodes if n.parent_class == class_name and n.node_type == 'method']
+        for type_node in results:
+            methods = [n for n in self.nodes if n.parent_class == type_name and n.node_type == 'method']
+            
+            print(f"\n{'='*70}")
+            print(f"{type_node.node_type.upper()} DETAILS: {type_name} [{type_node.language}]")
+            print(f"{'='*70}")
+            
+            print(f"\nLocation: {type_node.full_path}")
+            print(f"Lines: {type_node.start_line}-{type_node.end_line}")
+            print(f"Total Methods: {len(methods)}")
+            
+            if methods:
+                print(f"\nMethods:")
+                for method in sorted(methods, key=lambda m: m.start_line):
+                    params_str = ', '.join(method.parameters) if method.parameters else ''
+                    return_type_str = f" -> {method.return_type}" if method.return_type else ""
+                    print(f"  • {method.name}({params_str}){return_type_str}")
+                    print(f"      Line {method.start_line} | Calls: {len(method.calls)} | Called by: {len(method.called_by)}")
+            
+            if methods:
+                print(f"\nMost Called Methods:")
+                sorted_methods = sorted(methods, key=lambda m: len(m.called_by), reverse=True)[:5]
+                for method in sorted_methods:
+                    if method.called_by:
+                        print(f"  • {method.name}: called {len(method.called_by)} times")
+                        for caller in method.called_by[:3]:
+                            print(f"      <- {caller}")
+                        if len(method.called_by) > 3:
+                            print(f"      ... and {len(method.called_by) - 3} more")
+    
+    def print_all_types(self):
+        """Print all classes, enums, and interfaces"""
+        types = [n for n in self.nodes if n.node_type in ['class', 'enum', 'interface']]
         
-        print(f"\n{'='*70}")
-        print(f"CLASS DETAILS: {class_name} [{class_node.language}]")
-        print(f"{'='*70}")
+        print("\n" + "="*70)
+        print("ALL TYPES (Classes, Enums, Interfaces)")
+        print("="*70)
         
-        print(f"\nLocation: {class_node.full_path}")
-        print(f"Lines: {class_node.start_line}-{class_node.end_line}")
-        print(f"Total Methods: {len(methods)}")
+        types_by_file = defaultdict(list)
+        for node in types:
+            types_by_file[node.filepath].append(node)
         
-        if methods:
-            print(f"\nMethods:")
-            for method in sorted(methods, key=lambda m: m.start_line):
-                params_str = ', '.join(method.parameters) if method.parameters else ''
-                return_type_str = f" -> {method.return_type}" if method.return_type else ""
-                print(f"  • {method.name}({params_str}){return_type_str}")
-                print(f"      Line {method.start_line} | Calls: {len(method.calls)} | Called by: {len(method.called_by)}")
-        
-        print(f"\nMost Called Methods:")
-        sorted_methods = sorted(methods, key=lambda m: len(m.called_by), reverse=True)[:5]
-        for method in sorted_methods:
-            if method.called_by:
-                print(f"  • {method.name}: called {len(method.called_by)} times")
-                for caller in method.called_by[:3]:
-                    print(f"      <- {caller}")
-                if len(method.called_by) > 3:
-                    print(f"      ... and {len(method.called_by) - 3} more")
+        for filepath in sorted(types_by_file.keys()):
+            print(f"\n{filepath}:")
+            for node in sorted(types_by_file[filepath], key=lambda n: n.start_line):
+                method_count = len([n for n in self.nodes if n.parent_class == node.name])
+                type_label = f"[{node.node_type}]"
+                print(f"  • {node.name} {type_label:12} [{node.start_line}] - {method_count} methods")
 
 
 if __name__ == "__main__":
-    # Example: Scan a multi-language repository
     scanner = MultiLanguageScanner()
     
-    # Change this to your repo path
-    repo_path = '/Users/siva/web_developments/streamlit_app'
+    # repo path
+    repo_path = '/Users/siva/sandbox/spring-boot'
     
     scanner.scan_repository(repo_path)
     scanner.print_summary()
     
-    # Example queries:
-    # scanner.print_function_details('authenticate_user')
-    # scanner.print_class_details('AuthService')
+    # New methods:
+    # scanner.print_type_details('KafkaProperties')  # Works for class, enum, or interface
+    # scanner.print_all_types()  # Show all classes, enums, interfaces
