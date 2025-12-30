@@ -1,0 +1,29 @@
+# Semantic Tree Builder Dependencies
+
+# Tree-sitter core
+tree-sitter>=0.20.0
+
+# Language grammars
+tree-sitter-python>=0.20.0
+tree-sitter-java>=0.20.0
+tree-sitter-c>=0.20.0
+tree-sitter-cpp>=0.20.0
+
+# PR Review Dependencies
+requests>=2.31.0  # For GitHub API
+
+# LangChain Core
+langchain-core>=0.1.0
+
+# LLM Integration via LangChain (choose based on provider)
+langchain-groq>=0.1.0  # For Groq (Recommended)
+langchain-openai>=0.1.0  # For OpenAI (GPT-4, etc.)
+langchain-anthropic>=0.1.0  # For Anthropic (Claude, etc.)
+langchain-community>=0.1.0  # For local models (Ollama, etc.)
+
+# Environment variables
+python-dotenv>=1.0.0  # For loading .env files
+
+# Optional: For vector embeddings (future - Step 2)
+# sentence-transformers
+# chromadb
