@@ -1,0 +1,20 @@
+# RAG System Dependencies
+
+# Existing dependencies (from your current setup)
+langchain-groq
+langchain-core
+langchain-community  # For Ollama support
+python-dotenv
+requests
+
+# Tree-sitter for parsing (REQUIRED)
+tree-sitter>=0.20.0
+tree-sitter-python
+tree-sitter-java
+tree-sitter-c
+tree-sitter-cpp
+
+# New dependencies for RAG
+sentence-transformers>=2.2.0  # For embeddings
+chromadb>=0.4.0               # Vector database
+numpy>=1.24.0                 # For vector operations
